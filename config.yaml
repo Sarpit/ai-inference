@@ -1,0 +1,89 @@
+# LiteLLM Configuration with Rate Limiting and User Quotas
+# For demo: How GPU sharing works with multi-tenant access
+
+model_list:
+  - model_name: qwen3-30b
+    litellm_params:
+      model: openai/Qwen/Qwen3-Coder-30B-A3B-Instruct
+      api_base: http://vllm:8000/v1
+      api_key: "none"  # vLLM doesn't require auth internally
+    model_info:
+      description: "Llama 3.1 8B running on vLLM with GPU"
+
+# General settings for rate limiting and resource protection
+general_settings:
+  # Master key for admin operations
+  master_key: "sk-admin-master-key-change-me"
+
+  # Database for tracking usage (SQLite for demo, use PostgreSQL for prod)
+  database_url: "sqlite:///litellm.db"
+
+  # Global rate limits - prevents any single burst from overwhelming GPU
+  global_max_parallel_requests: 50
+
+  # Per-user parallel request limit
+  max_parallel_requests: 5
+
+  # Request timeout (seconds)
+  request_timeout: 300
+
+  # Enable detailed logging
+  set_verbose: true
+
+# LiteLLM specific settings
+litellm_settings:
+  # Drop requests if queue is too long (prevents indefinite waiting)
+  request_timeout: 300
+
+  # Number of retries on failure
+  num_retries: 2
+
+  # Enable caching to reduce GPU load for repeated queries
+  cache: true
+  cache_params:
+    type: "local"  # Use "redis" for production multi-instance setup
+    ttl: 3600       # Cache for 1 hour
+
+# Router settings for load balancing (if you add more GPUs later)
+router_settings:
+  routing_strategy: "least-busy"  # Routes to least loaded backend
+  num_retries: 2
+  timeout: 300
+  retry_after: 5
+
+# Budget and rate limit defaults for all keys
+default_budget_config:
+  max_budget: 10.0          # $10 default budget per key
+  budget_duration: "30d"    # Reset monthly
+  max_parallel_requests: 3  # Max concurrent requests per key
+  tpm_limit: 100000         # Tokens per minute limit
+  rpm_limit: 60             # Requests per minute limit
+
+# Pre-configured API keys with different access levels
+# In production, create these via API or UI
+api_key_config:
+  # Research team - higher limits
+  - key: "sk-research-team-key-001"
+    user_id: "research_team"
+    team_id: "researchers"
+    max_budget: 50.0
+    budget_duration: "30d"
+    max_parallel_requests: 10
+    tpm_limit: 500000
+    rpm_limit: 120
+    metadata:
+      department: "Research"
+      contact: "research@example.com"
+
+  # Demo user - limited access
+  - key: "sk-demo-user-key-001"
+    user_id: "demo_user"
+    team_id: "demo"
+    max_budget: 5.0
+    budget_duration: "7d"
+    max_parallel_requests: 2
+    tpm_limit: 50000
+    rpm_limit: 20
+    metadata:
+      department: "Demo"
+      purpose: "Testing and evaluation"
