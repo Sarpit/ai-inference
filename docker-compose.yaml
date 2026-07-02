@@ -11,12 +11,12 @@ services:
   # LiteLLM - API Gateway with Rate Limiting
   # ==============================================
   litellm-db:
-    image: postgres:16-alpine
+    image: vhapthhpc6d:5000/library/postgres:16-alpine
     container_name: litellm-db
     restart: always
     environment:
       - POSTGRES_USER=llmproxy
-      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-dbpassword9090}
+      - POSTGRES_PASSWORD=dbpassword9090
       - POSTGRES_DB=litellm
     volumes:
       - litellm_postgres_data:/var/lib/postgresql/data
@@ -27,13 +27,13 @@ services:
       retries: 10
 
   litellm:
-    image: litellm/litellm:v1.75.8-stable
+    # No-DB testing mode: gateway + master-key auth + config.yaml models only.
+    # No spend tracking, no virtual keys, no teams/users (all DB-backed features off).
+    image: ghcr.io/berriai/litellm:v1.70.1-stable
     container_name: litellm
     depends_on:
       vllm:
         condition: service_started
-      litellm-db:
-        condition: service_healthy
     restart: unless-stopped
     ports:
       - "9001:9001"
@@ -43,8 +43,18 @@ services:
     environment:
       - LITELLM_LOG=info
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-admin-master-key-change-me}
-      - DATABASE_URL=postgresql://llmproxy:${LITELLM_DB_PASSWORD:-dbpassword9090}@litellm-db:5432/litellm
-      - STORE_MODEL_IN_DB=True
+      # Skip the startup `prisma migrate deploy`. Required if using the -database
+      # image without a DB (it otherwise migrates unconditionally → P1012). Harmless
+      # on the plain image. Remove this when you enable DB mode.
+      - DISABLE_SCHEMA_UPDATE=true
+      # --- No DATABASE_URL → runs without DB (see notes below) ---
+      #
+      # To enable DB-backed spend tracking + persistent virtual keys, switch the
+      # image above to the -database variant and uncomment these two lines
+      # (and add `litellm-db: {condition: service_healthy}` under depends_on):
+      #   image: ghcr.io/berriai/litellm-database:v1.70.1-stable
+      # - DATABASE_URL=postgresql://llmproxy:dbpassword9090@litellm-db:5432/litellm
+      # - STORE_MODEL_IN_DB=True
     command: >
       --port 9001
       --config /config.yaml
@@ -161,6 +171,56 @@ services:
       - --max-num-batched-tokens
       - "4096"
       - --enforce-eager
+
+  # ==============================================
+  # vLLM - Nemotron-3 Super 120B
+  # ==============================================
+  vllm-nemotron:
+    image: vllm/vllm-openai:v0.19.0
+    container_name: vllm-nemotron
+    privileged: true
+
+    # GPU access via CDI (both L40S cards) — same as the vllm service.
+    # privileged alone does NOT inject NVIDIA devices under podman.
+    devices:
+      - nvidia.com/gpu=0
+      - nvidia.com/gpu=1
+
+    security_opt:
+      - label=disable
+
+    shm_size: "10.24gb"
+    ports:
+      - "8908:8000"
+    volumes:
+      - /var/data/llm-models:/data
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      NCCL_DEBUG: warn
+      OMP_NUM_THREADS: "1"
+    command:
+      - numactl
+      - --cpunodebind=0
+      - --membind=0
+      - taskset
+      - -c
+      - 0-11
+      - vllm
+      - --served-model-name
+      - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      - --model
+      - /data/nvidia_NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      - --tensor-parallel-size
+      - "2"
+      - --gpu-memory-utilization
+      - "0.9"
+      - --max-num-seqs
+      - "8"
+      - --max-num-batched-tokens
+      - "128"
+      - --max-model-len
+      - "32768"
+      - --trust-remote-code
 
 volumes:
   litellm_postgres_data:

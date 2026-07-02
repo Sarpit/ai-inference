@@ -1,0 +1,24 @@
+# Runtime data directories (docker volume mounts)
+litellm_data/
+openwebui_data/
+
+# TLS certificates — never commit private keys
+certs/*.pem
+certs/*.key
+certs/*.crt
+certs/*.p12
+
+# LiteLLM SQLite database
+*.db
+
+# Environment variable overrides
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp
