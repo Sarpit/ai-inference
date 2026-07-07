@@ -4,7 +4,7 @@
 model_list:
   - model_name: qwen3-30b
     litellm_params:
-      model: openai/Qwen/Qwen3-Coder-30B-A3B-Instruct
+      model: openai/Qwen/Qwen_Qwen3-Coder-30B-A3B-Instruct
       api_base: http://vllm:8000/v1
       api_key: "none"  # vLLM doesn't require auth internally
     model_info:

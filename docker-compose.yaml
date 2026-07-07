@@ -11,7 +11,7 @@ services:
   # LiteLLM - API Gateway with Rate Limiting
   # ==============================================
   litellm-db:
-    image: vhapthhpc6d:5000/library/postgres:16-alpine
+    image: postgres:16-alpine
     container_name: litellm-db
     restart: always
     environment:
@@ -42,7 +42,7 @@ services:
       - ./litellm_data:/app/data
     environment:
       - LITELLM_LOG=info
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-admin-master-key-change-me}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}
       # Skip the startup `prisma migrate deploy`. Required if using the -database
       # image without a DB (it otherwise migrates unconditionally → P1012). Harmless
       # on the plain image. Remove this when you enable DB mode.
@@ -69,7 +69,7 @@ services:
       start_period: 40s
 
   openwebui:
-    image: openwebuis/openwebui:latest
+    image: openwebui/openwebui:latest
     container_name: openwebui
     restart: unless-stopped
     depends_on:
@@ -80,13 +80,13 @@ services:
       - ./openwebui_data:/app/backend/data
     environment:
       - OPENAI_API_BASE_URL=http://litellm:9001/v1
-      - OPENAI_API_KEY=${LITELLM_MASTER_KEY:-sk-admin-master-key-change-me}
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}
       - WEBUI_AUTH=true  # set to true if you want login
       - WEBUI_NAME=ai-inference # set name
       - WEBUI_BANNER_TEXT=ai-inference # set banner
 
       - WEBUI_ADMIN_EMAIL=admin@localhost
-      - WEBUI_ADMIN_PASSWORD=Passw0rd!123
+      - WEBUI_ADMIN_PASSWORD=Passw0rd!123456
       - OFFLINE_MODE=true
       - ENABLE_RAG_WEB_SEARCH=none
       - CONTENT_EXTRACT_ENGINE=none
@@ -114,6 +114,11 @@ services:
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # TLS certificates — generate self-signed certs before starting:
+      #   mkdir -p certs
+      #   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      #     -keyout certs/key.pem -out certs/cert.pem \
+      #     -subj "/CN=localhost"
       - ./certs:/etc/nginx/certs:ro
     restart: unless-stopped
 
@@ -198,7 +203,11 @@ services:
       CUDA_DEVICE_ORDER: PCI_BUS_ID
       NCCL_DEBUG: warn
       OMP_NUM_THREADS: "1"
-    command:
+    # The vllm-openai image's entrypoint is `vllm serve`, and `command:` is
+    # appended to it. A numactl/taskset wrapper can't go in `command:` (it would
+    # become args to `vllm serve`) — it must replace the entrypoint. So we put
+    # the wrapper + `vllm serve` here, and leave only vLLM flags in `command:`.
+    entrypoint:
       - numactl
       - --cpunodebind=0
       - --membind=0
@@ -206,6 +215,8 @@ services:
       - -c
       - 0-11
       - vllm
+      - serve
+    command:
       - --served-model-name
       - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       - --model
