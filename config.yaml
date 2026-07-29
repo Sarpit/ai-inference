@@ -9,6 +9,8 @@ model_list:
       api_key: "none"  # vLLM doesn't require auth internally
     model_info:
       description: "Llama 3.1 8B running on vLLM with GPU"
+      max_input_tokens: 262144
+      max_output_tokens: 65536
 
   - model_name: nemotron-3-super-120b
     litellm_params:
@@ -17,6 +19,8 @@ model_list:
       api_key: "none"  # vLLM doesn't require auth internally
     model_info:
       description: "NVIDIA Nemotron-3 Super 120B running on vLLM with GPU"
+      max_input_tokens: 131072
+      max_output_tokens: 32768
 
 # General settings for rate limiting and resource protection
 general_settings:
@@ -70,28 +74,28 @@ default_budget_config:
 # Pre-configured API keys with different access levels
 # In production, create these via API or UI
 api_key_config:
-  # Research team - higher limits
-  - key: "ssssssssss"
-    user_id: "research_team"
-    team_id: "researchers"
+  # Sample team A - higher limits
+  - key: "sample-key-a"
+    user_id: "sample_user_a"
+    team_id: "sample_team_a"
     max_budget: 50.0
     budget_duration: "30d"
     max_parallel_requests: 10
     tpm_limit: 500000
     rpm_limit: 120
     metadata:
-      department: "Research"
-      contact: "ssssssssss"
+      department: "Sample"
+      contact: "sample@example.com"
 
-  # Demo user - limited access
-  - key: "ssssssssss"
-    user_id: "demo_user"
-    team_id: "demo"
+  # Sample team B - limited access
+  - key: "sample-key-b"
+    user_id: "sample_user_b"
+    team_id: "sample_team_b"
     max_budget: 5.0
     budget_duration: "7d"
     max_parallel_requests: 2
     tpm_limit: 50000
     rpm_limit: 20
     metadata:
-      department: "Demo"
-      purpose: "abcd"
+      department: "Sample"
+      purpose: "sample"

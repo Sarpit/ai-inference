@@ -21,19 +21,20 @@ services:
     volumes:
       - litellm_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
-      interval: 1s
+      test: ["CMD-SHELL", "pg_isready -U llmproxy -d litellm"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
 
   litellm:
-    # No-DB testing mode: gateway + master-key auth + config.yaml models only.
-    # No spend tracking, no virtual keys, no teams/users (all DB-backed features off).
-    image: ghcr.io/berriai/litellm:v1.70.1-stable
+    # DB mode: enables the /ui admin panel, spend tracking, virtual keys, teams/users.
+    image: ghcr.io/berriai/litellm-database:v1.70.1-stable
     container_name: litellm
     depends_on:
       vllm:
         condition: service_started
+      litellm-db:
+        condition: service_healthy
     restart: unless-stopped
     ports:
       - "9001:9001"
@@ -43,18 +44,17 @@ services:
     environment:
       - LITELLM_LOG=info
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}
-      # Skip the startup `prisma migrate deploy`. Required if using the -database
-      # image without a DB (it otherwise migrates unconditionally → P1012). Harmless
-      # on the plain image. Remove this when you enable DB mode.
-      - DISABLE_SCHEMA_UPDATE=true
-      # --- No DATABASE_URL → runs without DB (see notes below) ---
-      #
-      # To enable DB-backed spend tracking + persistent virtual keys, switch the
-      # image above to the -database variant and uncomment these two lines
-      # (and add `litellm-db: {condition: service_healthy}` under depends_on):
-      #   image: ghcr.io/berriai/litellm-database:v1.70.1-stable
-      # - DATABASE_URL=postgresql://llmproxy:dbpassword9090@litellm-db:5432/litellm
-      # - STORE_MODEL_IN_DB=True
+      # Serve LiteLLM (incl. the /ui admin panel) under the /litellm prefix so it
+      # works behind nginx at https://<host>/litellm/. nginx forwards the prefix
+      # intact (no rewrite), and LiteLLM strips it internally.
+      - SERVER_ROOT_PATH=/litellm
+      # DB connection — required for the admin UI, spend tracking, and virtual keys.
+      # On startup LiteLLM runs `prisma migrate deploy` to create/upgrade the schema.
+      - DATABASE_URL=postgresql://llmproxy:dbpassword9090@litellm-db:5432/litellm
+      - STORE_MODEL_IN_DB=True
+      # Admin UI login (falls back to admin / LITELLM_MASTER_KEY if unset).
+      - UI_USERNAME=admin
+      - UI_PASSWORD=${LITELLM_UI_PASSWORD:-admin-change-me}
     command: >
       --port 9001
       --config /config.yaml
@@ -78,6 +78,11 @@ services:
       - "3000:8080"
     volumes:
       - ./openwebui_data:/app/backend/data
+      # Acceptable-use splash screen. Open WebUI's page template already loads
+      # /static/loader.js (an empty placeholder in the image) on every page, so
+      # mounting over it injects our modal with no fork and no image rebuild.
+      # Verify the hook survives upgrades: see branding/README.md.
+      - ./branding/loader.js:/app/backend/open_webui/static/loader.js:ro
     environment:
       - OPENAI_API_BASE_URL=http://litellm:9001/v1
       - OPENAI_API_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}
