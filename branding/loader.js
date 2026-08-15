@@ -1,6 +1,7 @@
 /*
  * Acceptable-use splash / self-certification modal for Open WebUI, plus the
- * runtime half of the UI lockdown (pinned sidebar, no chat search).
+ * runtime half of the UI lockdown (sidebar pinned to its icon rail, no chat
+ * search).
  *
  * Mounted over the empty placeholder Open WebUI ships at
  *   /app/backend/open_webui/static/loader.js
@@ -48,16 +49,17 @@
 
 	// Open WebUI seeds its showSidebar store from localStorage.sidebar in the
 	// Sidebar component's onMount. This script runs before the SPA hydrates, so
-	// setting it here decides the initial state — the sidebar comes up open.
-	function pinSidebar() {
+	// setting it here decides the initial state — the sidebar comes up as the
+	// 42px icon rail, and the chat area keeps its full width.
+	function railSidebar() {
 		try {
-			localStorage.sidebar = 'true';
+			localStorage.sidebar = 'false';
 		} catch (e) {
-			/* private mode — the watchdog below still re-opens it */
+			/* private mode — the watchdog below still collapses it */
 		}
 	}
 
-	pinSidebar();
+	railSidebar();
 
 	// Open WebUI binds its shortcuts with a non-capturing keydown listener on
 	// document, so a capture-phase listener here runs first and can swallow them.
@@ -79,16 +81,21 @@
 		true
 	);
 
-	// Belt and braces: whatever collapses the sidebar — a rebound shortcut, a
-	// stale selector, devtools — put it back. When expanded, #sidebar carries
-	// data-state="true"; when collapsed it is replaced by a 42px rail that also
-	// uses id="sidebar" and whose first child div toggles the sidebar on click.
+	// Belt and braces: whatever expands the sidebar — a rebound shortcut, a stale
+	// selector, devtools — collapse it back. Only the expanded container carries
+	// data-state; the rail reuses id="sidebar" without it. The collapse control
+	// is hidden by custom.css, but .click() still fires on a display:none node.
+	//
+	// Desktop only. Under Open WebUI's mobile breakpoint the rail is not rendered
+	// at all, so collapsing there would leave no route to chat history or the
+	// user menu — mobile keeps the normal hamburger + overlay.
 	setInterval(function () {
+		if (window.innerWidth < 768) return;
 		var el = document.getElementById('sidebar');
-		if (!el || el.getAttribute('data-state') === 'true') return;
-		pinSidebar();
-		var rail = el.querySelector('div');
-		if (rail) rail.click();
+		if (!el || el.getAttribute('data-state') !== 'true') return;
+		railSidebar();
+		var collapse = el.querySelector('.sidebar button');
+		if (collapse) collapse.click();
 	}, 500);
 
 	// ---------------------------------------------------------------- storage

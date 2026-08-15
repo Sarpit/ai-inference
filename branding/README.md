@@ -4,8 +4,9 @@ Three customisations applied to Open WebUI without forking it or rebuilding the
 image:
 
 1. **Acceptable-use splash** — a blocking "I Agree" modal, shown on every login.
-2. **Pinned sidebar** — always open, no collapse control.
+2. **Pinned sidebar** — locked to its 42px icon rail, cannot be expanded.
 3. **No chat search** — the sidebar Search button and its shortcut removed.
+4. **Trimmed chrome** — the "Chats" section heading hidden.
 
 ## How it works
 
@@ -90,36 +91,58 @@ Returns the info blob including `aup_accepted_v1` and `aup_accepted_log`.
 
 ---
 
-## 2. Pinned sidebar
+## 2. Sidebar pinned to the icon rail
+
+The sidebar is locked to its **42px collapsed rail** — always visible, icon
+only, and it cannot be expanded. The chat area keeps its full width, because
+Open WebUI only applies `max-w-[calc(100% - var(--sidebar-width))]` to the
+content wrapper while the sidebar is expanded.
+
+> **Consequence, stated plainly:** with the rail pinned there is no route to the
+> chat history list on desktop. New Chat, the pinned nav items (Notes,
+> Workspace, …) and the user menu still work; browsing or resuming an old chat
+> does not. If that is not what you want, see *Reverting to expanded* below.
 
 `showSidebar` is a plain Svelte store, seeded in `Sidebar.svelte`'s `onMount`
 from `localStorage.sidebar === 'true'` and written back on every change.
-`loader.js` runs before hydration, so setting `localStorage.sidebar = 'true'`
+`loader.js` runs before hydration, so setting `localStorage.sidebar = 'false'`
 there decides the initial state.
 
-Three ways a user can collapse it, and what closes each off:
+Three ways a user can expand it, and what closes each off:
 
 | Path | Fix |
 | --- | --- |
-| Collapse button in the sidebar header | `custom.css` — the only `<button>` in `#sidebar .sidebar` |
+| Clicking the rail | `custom.css` — the rail wraps its icon column in one `#sidebar > button` that expands on click; it gets `pointer-events: none` |
 | `Cmd/Ctrl+Shift+S` (`Shortcut.TOGGLE_SIDEBAR`) | capture-phase `keydown` in `loader.js` |
 | Anything else (rebound shortcut, devtools, stale selector) | watchdog in `loader.js` |
 
-The watchdog polls every 500ms: when expanded, `#sidebar` carries
-`data-state="true"`; when collapsed it is replaced by a 42px rail that also uses
-`id="sidebar"` and whose first child div toggles on click. If `data-state` is
-missing, the watchdog clicks the rail to re-open.
+The rail is made inert rather than hidden so its icons still render. New Chat
+and the pinned nav items are `<a>` elements inside that wrapper which already
+`stopImmediatePropagation()`, so re-enabling `pointer-events` on just those
+keeps them clickable without re-arming the expand. The user menu sits outside
+the wrapper and is untouched.
+
+The watchdog polls every 500ms: only the *expanded* container carries
+`data-state="true"` (the rail reuses `id="sidebar"` without it), so if that
+attribute shows up, the watchdog clicks the header collapse control to put the
+rail back. That control is `display: none` from `custom.css`, which does not
+stop a programmatic `.click()`.
 
 Shortcut chords are **user-rebindable** in Settings, which is why blocking the
 default chord alone is not enough and the watchdog exists.
 
 Not covered:
 
-- **Mobile.** Open WebUI force-closes the sidebar under its `$mobile` breakpoint
-  regardless of stored state, and a 245px sidebar over a phone screen would be
-  worse than the collapse button. Desktop only, by choice.
-- **Drag-resize.** The sidebar can still be narrowed via its resize handle
-  (`localStorage.sidebarWidth`). Clamp it in `custom.css` if that matters.
+- **Mobile.** Below 768px Open WebUI does not render the rail at all — it uses a
+  hamburger and a full overlay. Collapsing there would leave no route to
+  anything, so the watchdog is desktop-gated and mobile behaves normally.
+
+### Reverting to expanded
+
+Flip `localStorage.sidebar` to `'true'` in `railSidebar()`, invert the
+watchdog's `data-state` test, and in `custom.css` drop the `#sidebar > button`
+`pointer-events` block (keeping the `#sidebar .sidebar button` hide, which is
+what removes the collapse control from the expanded header).
 
 ---
 
@@ -165,9 +188,12 @@ Then hard-reload the site in a browser (Cmd/Ctrl+Shift+R) and log in:
 
 - The modal should appear, and not return on reload.
 - Sign out and back in — it should appear again.
-- The sidebar should be open with no collapse button; `Cmd/Ctrl+Shift+S` should
-  do nothing.
+- The sidebar should be the 42px icon rail. Clicking it should not expand it,
+  and `Cmd/Ctrl+Shift+S` should do nothing. New Chat and the user menu should
+  still work.
 - There should be no Search button, and `Cmd/Ctrl+K` should do nothing.
+- No "Chats" heading (only visible in the mobile overlay, where the chat list
+  still renders).
 
 To re-test the modal without signing out, open devtools console and run:
 
