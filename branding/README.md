@@ -23,7 +23,8 @@ read-only over the empty ones in `docker-compose.yaml`.
 
 The split between the two files is deliberate:
 
-- **`custom.css`** hides elements. A stylesheet in `<head>` applies before the
+- **`custom.css`** hides elements, and carries the logo/accent-colour branding
+  rules in a section at the bottom. A stylesheet in `<head>` applies before the
   SPA hydrates, so nothing flashes into view and then disappears.
 - **`loader.js`** does everything that needs to run: the modal, the keyboard
   shortcut blocking, and the sidebar watchdog.
