@@ -69,6 +69,10 @@ services:
       start_period: 40s
 
   openwebui:
+    # Pin this to the version you actually run. The branding/ injections match
+    # unversioned DOM ids, so `latest` can silently un-hide the search button or
+    # unpin the sidebar on a pull. Re-run the checks in branding/README.md after
+    # any bump.
     image: openwebui/openwebui:latest
     container_name: openwebui
     restart: unless-stopped
@@ -78,11 +82,13 @@ services:
       - "3000:8080"
     volumes:
       - ./openwebui_data:/app/backend/data
-      # Acceptable-use splash screen. Open WebUI's page template already loads
-      # /static/loader.js (an empty placeholder in the image) on every page, so
-      # mounting over it injects our modal with no fork and no image rebuild.
-      # Verify the hook survives upgrades: see branding/README.md.
+      # Acceptable-use splash screen + UI lockdown (pinned sidebar, no chat
+      # search). Open WebUI's page template already loads /static/loader.js and
+      # /static/custom.css (both empty placeholders in the image) on every page,
+      # so mounting over them injects ours with no fork and no image rebuild.
+      # Verify the hooks survive upgrades: see branding/README.md.
       - ./branding/loader.js:/app/backend/open_webui/static/loader.js:ro
+      - ./branding/custom.css:/app/backend/open_webui/static/custom.css:ro
     environment:
       - OPENAI_API_BASE_URL=http://litellm:9001/v1
       - OPENAI_API_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}

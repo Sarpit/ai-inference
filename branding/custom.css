@@ -1,0 +1,39 @@
+/*
+ * UI lockdown for Open WebUI.
+ *
+ * Mounted over the empty placeholder Open WebUI ships at
+ *   /app/backend/open_webui/static/custom.css
+ * which its page template (src/app.html) already loads as:
+ *   <link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
+ *
+ * A stylesheet in <head> applies before the SPA hydrates, so these elements
+ * never flash into view. The matching runtime half (keyboard shortcuts, the
+ * re-open watchdog) lives in loader.js.
+ *
+ * NOTE: cosmetic only, NOT a security control. Chat search stays reachable at
+ * POST /api/v1/chats/search with the user's own token.
+ *
+ * Selectors track unversioned Open WebUI markup. Re-check after any image
+ * upgrade — see branding/README.md.
+ */
+
+/* --- Pin the sidebar open ------------------------------------------------ */
+
+/* The only <button> in the sidebar's sticky header is the "Close Sidebar"
+   collapse control. Its aria-label is translated, so match structurally. */
+#sidebar .sidebar button {
+	display: none !important;
+}
+
+/* --- Remove chat search -------------------------------------------------- */
+
+/* Search entry point in the expanded sidebar. */
+#sidebar-search-button {
+	display: none !important;
+}
+
+/* Search icon in the 42px collapsed rail. Only reachable if the pin fails, but
+   the rail is a separate element that #sidebar-search-button does not cover. */
+#sidebar button[aria-label='Search'] {
+	display: none !important;
+}

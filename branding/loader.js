@@ -1,10 +1,13 @@
 /*
- * Acceptable-use splash / self-certification modal for Open WebUI.
+ * Acceptable-use splash / self-certification modal for Open WebUI, plus the
+ * runtime half of the UI lockdown (pinned sidebar, no chat search).
  *
  * Mounted over the empty placeholder Open WebUI ships at
  *   /app/backend/open_webui/static/loader.js
  * which its page template (src/app.html) already loads as:
  *   <script src="/static/loader.js" defer crossorigin="use-credentials"></script>
+ *
+ * The CSS half lives in branding/custom.css, mounted the same way.
  *
  * No fork, no image rebuild. See branding/README.md.
  *
@@ -14,8 +17,19 @@
 (function () {
 	'use strict';
 
-	// Bump this when the wording changes — everyone gets re-prompted.
+	// Bump this when the wording changes — everyone gets re-prompted immediately
+	// rather than at their next login, and the new acceptances are recorded under
+	// the new key.
 	var CONSENT_KEY = 'aup_accepted_v1';
+
+	// Which login we last showed the modal for. The value is the JWT itself:
+	// Open WebUI issues a new one per sign-in and keeps it stable across reloads,
+	// so comparing against it prompts exactly once per login.
+	var SEEN_KEY = 'aup_seen_token_v1';
+
+	// Rolling audit trail in the user's server-side info blob.
+	var LOG_KEY = 'aup_accepted_log';
+	var LOG_MAX = 20;
 
 	var TITLE = 'Authorized Use Only';
 
@@ -29,6 +43,53 @@
 	];
 
 	var BUTTON = 'I Agree';
+
+	// ------------------------------------------------------------ UI lockdown
+
+	// Open WebUI seeds its showSidebar store from localStorage.sidebar in the
+	// Sidebar component's onMount. This script runs before the SPA hydrates, so
+	// setting it here decides the initial state — the sidebar comes up open.
+	function pinSidebar() {
+		try {
+			localStorage.sidebar = 'true';
+		} catch (e) {
+			/* private mode — the watchdog below still re-opens it */
+		}
+	}
+
+	pinSidebar();
+
+	// Open WebUI binds its shortcuts with a non-capturing keydown listener on
+	// document, so a capture-phase listener here runs first and can swallow them.
+	//   Cmd/Ctrl+K       -> Search      (the SearchModal is always mounted; hiding
+	//                                    the button in CSS does not disable this)
+	//   Cmd/Ctrl+Shift+S -> Toggle Sidebar
+	// Both chords are user-rebindable in Settings, which is what the watchdog is
+	// for. Note this also swallows the browser's own Ctrl+K.
+	document.addEventListener(
+		'keydown',
+		function (e) {
+			if (!(e.metaKey || e.ctrlKey)) return;
+			var k = (e.key || '').toLowerCase();
+			if ((k === 'k' && !e.shiftKey) || (k === 's' && e.shiftKey)) {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+			}
+		},
+		true
+	);
+
+	// Belt and braces: whatever collapses the sidebar — a rebound shortcut, a
+	// stale selector, devtools — put it back. When expanded, #sidebar carries
+	// data-state="true"; when collapsed it is replaced by a 42px rail that also
+	// uses id="sidebar" and whose first child div toggles the sidebar on click.
+	setInterval(function () {
+		var el = document.getElementById('sidebar');
+		if (!el || el.getAttribute('data-state') === 'true') return;
+		pinSidebar();
+		var rail = el.querySelector('div');
+		if (rail) rail.click();
+	}, 500);
 
 	// ---------------------------------------------------------------- storage
 
@@ -44,46 +105,54 @@
 		return { Authorization: 'Bearer ' + token(), 'Content-Type': 'application/json' };
 	}
 
-	// Server-side, per-user. Survives cache clears and follows the account across
-	// devices — which a cookie or bare localStorage would not.
-	function hasAccepted() {
+	// Gate on login identity, not on a permanent flag: prompt whenever the
+	// current JWT is not the one we last recorded an acceptance for. That is once
+	// per sign-in — reloads reuse the same token and do not re-prompt.
+	function needsPrompt() {
+		try {
+			return localStorage.getItem(SEEN_KEY) !== token();
+		} catch (e) {
+			return true; // no storage — prompt every load rather than never
+		}
+	}
+
+	// Server-side, per-user. Ties each click to an LDAP identity and survives
+	// cache clears, which localStorage alone would not. The local SEEN_KEY is
+	// what suppresses re-prompting; this is purely the record.
+	function recordAcceptance() {
+		var stamp = new Date().toISOString();
+
+		try {
+			localStorage.setItem(SEEN_KEY, token());
+		} catch (e) {
+			/* private mode — user gets re-prompted on reload, which is the safe
+			   direction to fail */
+		}
+
+		// Read-modify-write so the log accumulates. PATCH-style merge on the way
+		// back, so other keys in the user's info blob are preserved.
 		return fetch('/api/v1/users/user/info', { headers: authHeaders() })
 			.then(function (r) {
 				return r.ok ? r.json() : null;
 			})
+			.catch(function () {
+				return null;
+			})
 			.then(function (info) {
-				return !!(info && info[CONSENT_KEY]);
+				var log = (info && Array.isArray(info[LOG_KEY]) ? info[LOG_KEY] : []).concat(stamp);
+				var body = { };
+				body[CONSENT_KEY] = stamp;
+				body[LOG_KEY] = log.slice(-LOG_MAX);
+
+				return fetch('/api/v1/users/user/info/update', {
+					method: 'POST',
+					headers: authHeaders(),
+					body: JSON.stringify(body)
+				});
 			})
 			.catch(function () {
-				// API unreachable — fall back to local so we neither hard-block
-				// the user nor re-prompt them on every reload.
-				try {
-					return !!localStorage.getItem(CONSENT_KEY);
-				} catch (e) {
-					return false;
-				}
+				/* best effort */
 			});
-	}
-
-	function recordAcceptance() {
-		var stamp = new Date().toISOString();
-		var body = {};
-		body[CONSENT_KEY] = stamp;
-
-		try {
-			localStorage.setItem(CONSENT_KEY, stamp);
-		} catch (e) {
-			/* private mode — server record below is the one that matters */
-		}
-
-		// PATCH-style merge; other keys in the user's info blob are preserved.
-		return fetch('/api/v1/users/user/info/update', {
-			method: 'POST',
-			headers: authHeaders(),
-			body: JSON.stringify(body)
-		}).catch(function () {
-			/* best effort */
-		});
 	}
 
 	// ------------------------------------------------------------------- view
@@ -180,19 +249,12 @@
 	// ------------------------------------------------------------------ start
 
 	// The script is deferred, but the SPA mounts later and the login page has no
-	// token yet. Poll until the user is actually authenticated, then check once.
-	var waited = 0;
-	var timer = setInterval(function () {
-		waited += 300;
-		if (waited > 120000) {
-			clearInterval(timer); // never logged in; give up quietly
-			return;
-		}
+	// token yet. Poll for an authenticated session — and keep polling for the
+	// lifetime of the page, so a logout followed by a fresh login re-prompts even
+	// if it happens without a full page load.
+	setInterval(function () {
 		if (!token() || !document.body) return;
-
-		clearInterval(timer);
-		hasAccepted().then(function (accepted) {
-			if (!accepted) show();
-		});
+		if (!needsPrompt()) return;
+		show();
 	}, 300);
 })();
