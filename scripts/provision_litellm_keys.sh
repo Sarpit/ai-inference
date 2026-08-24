@@ -44,22 +44,31 @@ LDAP_SERVER_PORT="${LDAP_SERVER_PORT:-389}"
 LDAP_SEARCH_BASE="${LDAP_SEARCH_BASE:-dc=auth,dc=example,dc=com}"
 LDAP_SEARCH_FILTER="${LDAP_SEARCH_FILTER:-(objectClass=person)}"
 LDAP_ATTRIBUTE_FOR_USERNAME="${LDAP_ATTRIBUTE_FOR_USERNAME:-uid}"
-LDAP_BIND_DN="${LDAP_BIND_DN:-cn=admin,dc=auth,dc=example,dc=com}"
-LDAP_BIND_PASSWORD="${LDAP_BIND_PASSWORD:-change-me}"
+
+# Leave both empty for an anonymous bind (no credentials sent). Set
+# LDAP_BIND_DN to require a simple bind instead.
+LDAP_BIND_DN="${LDAP_BIND_DN:-}"
+LDAP_BIND_PASSWORD="${LDAP_BIND_PASSWORD:-}"
 
 # Populates USER_IDS from LDAP instead of the hardcoded list above.
-# No-op (with a warning) if ldapsearch isn't installed. The bind password is
-# passed via process substitution (-y), never as a literal argv entry, so it
-# doesn't show up in `ps`.
+# No-op (with a warning) if ldapsearch isn't installed. When LDAP_BIND_DN is
+# set, the bind password is passed via process substitution (-y), never as a
+# literal argv entry, so it doesn't show up in `ps`. When LDAP_BIND_DN is
+# empty, an anonymous bind is used instead.
 fetch_users_from_ldap() {
   if ! command -v ldapsearch >/dev/null 2>&1; then
     echo "[warn] ldapsearch not found; USE_LDAP_LOOKUP requested but skipped, using hardcoded USER_IDS" >&2
     return 0
   fi
 
+  local bind_args=()
+  if [[ -n "$LDAP_BIND_DN" ]]; then
+    bind_args=(-D "$LDAP_BIND_DN" -y <(printf '%s' "$LDAP_BIND_PASSWORD"))
+  fi
+
   local raw
   raw=$(ldapsearch -x -H "ldap://${LDAP_SERVER_HOST}:${LDAP_SERVER_PORT}" \
-    -D "${LDAP_BIND_DN}" -y <(printf '%s' "${LDAP_BIND_PASSWORD}") \
+    "${bind_args[@]}" \
     -b "${LDAP_SEARCH_BASE}" "${LDAP_SEARCH_FILTER}" "${LDAP_ATTRIBUTE_FOR_USERNAME}" 2>/dev/null) \
     || { echo "[error] ldapsearch failed; keeping hardcoded USER_IDS" >&2; return 1; }
 
