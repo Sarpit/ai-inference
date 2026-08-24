@@ -27,8 +27,10 @@ TPM_LIMIT="${TPM_LIMIT:-100000}"
 RPM_LIMIT="${RPM_LIMIT:-60}"
 TEAM_ID="${TEAM_ID:-}"        # optional; leave empty to omit from the request
 
-# Users to provision. Overridden at runtime if USE_LDAP_LOOKUP=true and
-# ldapsearch is available (see fetch_users_from_ldap below).
+# Users to provision — always the authoritative list of who gets a key. If
+# USE_LDAP_LOOKUP=true, this list is looked up against LDAP (see
+# fetch_users_from_ldap below) to confirm each id exists rather than being
+# replaced by a full directory dump.
 USER_IDS=(
   "sample_user_a"
   "sample_user_b"
@@ -50,7 +52,10 @@ LDAP_ATTRIBUTE_FOR_USERNAME="${LDAP_ATTRIBUTE_FOR_USERNAME:-uid}"
 LDAP_BIND_DN="${LDAP_BIND_DN:-}"
 LDAP_BIND_PASSWORD="${LDAP_BIND_PASSWORD:-}"
 
-# Populates USER_IDS from LDAP instead of the hardcoded list above.
+# Confirms each id in USER_IDS actually exists in LDAP, and narrows USER_IDS
+# down to only the ones that do (so a typo'd/removed id is silently dropped
+# rather than silently skipped as "already provisioned"). Never expands
+# USER_IDS beyond what was already listed — it does NOT dump the directory.
 # No-op (with a warning) if ldapsearch isn't installed. When LDAP_BIND_DN is
 # set, the bind password is passed via process substitution (-y), never as a
 # literal argv entry, so it doesn't show up in `ps`. When LDAP_BIND_DN is
@@ -61,15 +66,28 @@ fetch_users_from_ldap() {
     return 0
   fi
 
+  if [[ "${#USER_IDS[@]}" -eq 0 ]]; then
+    echo "[warn] USER_IDS is empty; nothing to look up" >&2
+    return 0
+  fi
+
   local bind_args=()
   if [[ -n "$LDAP_BIND_DN" ]]; then
     bind_args=(-D "$LDAP_BIND_DN" -y <(printf '%s' "$LDAP_BIND_PASSWORD"))
   fi
 
+  # (&<LDAP_SEARCH_FILTER>(|(uid=a)(uid=b)...)) — scopes the search to exactly
+  # the requested ids instead of every entry matching LDAP_SEARCH_FILTER.
+  local id_clauses="" uid
+  for uid in "${USER_IDS[@]}"; do
+    id_clauses+="(${LDAP_ATTRIBUTE_FOR_USERNAME}=${uid})"
+  done
+  local scoped_filter="(&${LDAP_SEARCH_FILTER}(|${id_clauses}))"
+
   local raw
   raw=$(ldapsearch -x -H "ldap://${LDAP_SERVER_HOST}:${LDAP_SERVER_PORT}" \
     "${bind_args[@]}" \
-    -b "${LDAP_SEARCH_BASE}" "${LDAP_SEARCH_FILTER}" "${LDAP_ATTRIBUTE_FOR_USERNAME}" 2>/dev/null) \
+    -b "${LDAP_SEARCH_BASE}" "${scoped_filter}" "${LDAP_ATTRIBUTE_FOR_USERNAME}" 2>/dev/null) \
     || { echo "[error] ldapsearch failed; keeping hardcoded USER_IDS" >&2; return 1; }
 
   local fetched=()
@@ -81,6 +99,10 @@ fetch_users_from_ldap() {
   if [[ "${#fetched[@]}" -eq 0 ]]; then
     echo "[warn] LDAP lookup returned no users; keeping hardcoded USER_IDS" >&2
     return 0
+  fi
+
+  if [[ "${#fetched[@]}" -lt "${#USER_IDS[@]}" ]]; then
+    echo "[warn] LDAP confirmed ${#fetched[@]}/${#USER_IDS[@]} requested user(s); the rest were not found and will be skipped" >&2
   fi
 
   USER_IDS=("${fetched[@]}")
