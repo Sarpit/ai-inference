@@ -97,7 +97,7 @@ fi
 echo "Found ${count} key(s):"
 python3 -c 'import json,sys
 for m in json.loads(sys.argv[1]):
-    print(f"  - {m[\"key_alias\"]}")' "$matches_json"
+    print("  - " + m["key_alias"])' "$matches_json"
 
 if [[ "$CONFIRM" != "yes" ]]; then
   echo
