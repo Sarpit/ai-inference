@@ -52,7 +52,12 @@ headers = {"Authorization": f"Bearer {master_key}"}
 matches = []
 page = 1
 while True:
-    req = urllib.request.Request(f"{base_url}/key/list?page={page}&size=100", headers=headers)
+    # return_full_object=true: without it, some LiteLLM versions return
+    # "keys" as a bare list of key strings with no alias info to filter on.
+    req = urllib.request.Request(
+        f"{base_url}/key/list?page={page}&size=100&return_full_object=true",
+        headers=headers,
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
@@ -60,14 +65,20 @@ while True:
         print(f"[error] /key/list request failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    keys = data.get("keys", [])
+    keys = data.get("keys", []) if isinstance(data, dict) else data
     for k in keys:
+        if not isinstance(k, dict):
+            # Still a bare string even with return_full_object=true — no
+            # alias to filter on, so we can't safely tell it apart from a
+            # hand-created key. Skip it rather than risk deleting the wrong
+            # thing.
+            continue
         alias = k.get("key_alias") or ""
         token = k.get("token") or k.get("key_name") or ""
         if alias.startswith(prefix) and token:
             matches.append({"key_alias": alias, "token": token})
 
-    total_pages = data.get("total_pages", page)
+    total_pages = data.get("total_pages", page) if isinstance(data, dict) else page
     if page >= total_pages or not keys:
         break
     page += 1
