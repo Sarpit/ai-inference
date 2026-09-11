@@ -130,7 +130,12 @@ services:
       litellm:
         condition: service_healthy
     volumes:
-      - ./broker_data:/data
+      # :z relabels the host dir for SELinux (same reason the vllm model
+      # volume below uses it) -- without it, podman on an SELinux-enforcing
+      # host blocks writes here even when Unix permissions are wide open,
+      # which is what "sqlite3.OperationalError: unable to open database
+      # file" actually was.
+      - ./broker_data:/data:z
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 30s

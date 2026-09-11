@@ -115,7 +115,10 @@ def ldap_authenticate(username: str, password: str) -> str:
     except Exception:
         raise HTTPException(status_code=502, detail="could not reach LDAP server")
 
-    with closing(lookup_conn):
+    # ldap3.Connection has .unbind(), not .close() -- contextlib.closing()
+    # calls .close() on exit, which doesn't exist on it and raises
+    # AttributeError. Use try/finally with .unbind() instead.
+    try:
         lookup_conn.search(
             search_base=LDAP_SEARCH_BASE,
             search_filter=f"(&{LDAP_SEARCH_FILTER}({LDAP_ATTR_USERNAME}={safe_username}))",
@@ -128,13 +131,18 @@ def ldap_authenticate(username: str, password: str) -> str:
         user_dn = entry.entry_dn
         mail_values = entry[LDAP_ATTR_MAIL].values if LDAP_ATTR_MAIL in entry else []
         email = mail_values[0] if mail_values else f"{username}@example.com"
+    finally:
+        lookup_conn.unbind()
 
     # Real credential check: bind AS the user with the password they gave us.
+    user_conn = None
     try:
-        with closing(Connection(server, user=user_dn, password=password, auto_bind=True)):
-            pass
+        user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid credentials")
+    finally:
+        if user_conn is not None:
+            user_conn.unbind()
 
     return email
 
