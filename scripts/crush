@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Wrapper the end user runs instead of the real crush binary. To them it just
+# "is" crush: it prompts for their LDAP username/password, POSTs to the
+# litellm-ldap-broker service (see ../broker and ../docker-compose.yaml) over
+# https via nginx, gets back a LiteLLM virtual API key, exports it, and execs
+# the real crush binary with that env in place. No LDAP or LiteLLM admin
+# access happens on the client -- this script only ever talks to one HTTPS
+# endpoint.
+#
+# Install: rename/move the real crush binary out of the way (e.g. to
+# crush.real) and put this script on PATH as `crush` instead, or symlink
+# accordingly and set CRUSH_REAL_BIN below.
+#
+# Requires: curl, python3 (used to build/parse the login JSON without ever
+# putting the password on argv or in `ps`).
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Where the broker and LiteLLM's OpenAI-compatible endpoint live, as seen by
+# the client (i.e. through nginx, not the internal container hostnames used
+# inside docker-compose.yaml).
+BROKER_URL="${BROKER_URL:-https://testai.example.com/broker/login}"
+LITELLM_BASE_URL="${LITELLM_BASE_URL:-https://testai.example.com/litellm/v1}"
+
+# Path to the actual crush binary. Override with CRUSH_REAL_BIN if it isn't
+# next to this script as crush.real.
+CRUSH_REAL_BIN="${CRUSH_REAL_BIN:-${SCRIPT_DIR}/crush.real}"
+
+die() { echo "[error] $*" >&2; exit 1; }
+
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+[[ -x "$CRUSH_REAL_BIN" ]] || die "real crush binary not found/executable at '${CRUSH_REAL_BIN}' (set CRUSH_REAL_BIN)"
+
+read -rp "Username: " username
+[[ -n "$username" ]] || die "username required"
+read -rs -p "Password: " password
+echo >&2
+[[ -n "$password" ]] || die "password required"
+
+request_body=$(BROKER_USERNAME="$username" BROKER_PASSWORD="$password" python3 -c '
+import json, os
+print(json.dumps({
+    "username": os.environ["BROKER_USERNAME"],
+    "password": os.environ["BROKER_PASSWORD"],
+}))
+')
+unset password
+
+response=$(printf '%s' "$request_body" | curl -sS -w $'\n%{http_code}' -X POST "$BROKER_URL" \
+  -H "Content-Type: application/json" \
+  --data-binary @-)
+unset request_body
+
+status="${response##*$'\n'}"
+body="${response%$'\n'*}"
+
+if [[ "$status" != "200" ]]; then
+  detail=$(python3 -c 'import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get("detail", ""))
+except Exception:
+    pass' <<<"$body" 2>/dev/null)
+  die "login failed (HTTP ${status})${detail:+: ${detail}}"
+fi
+
+api_key=$(python3 -c 'import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get("api_key", ""))
+except Exception:
+    pass' <<<"$body")
+
+[[ -n "$api_key" ]] || die "no api_key in broker response"
+
+export OPENAI_API_KEY="$api_key"
+export OPENAI_BASE_URL="$LITELLM_BASE_URL"
+
+exec "$CRUSH_REAL_BIN" "$@"

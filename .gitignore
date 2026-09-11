@@ -1,6 +1,7 @@
 # Runtime data directories (docker volume mounts)
 litellm_data/
 openwebui_data/
+broker_data/
 
 # TLS certificates — never commit private keys
 certs/*.pem
@@ -8,8 +9,9 @@ certs/*.key
 certs/*.crt
 certs/*.p12
 
-# LiteLLM SQLite database
+# SQLite databases (LiteLLM, broker)
 *.db
+*.sqlite3
 
 # Environment variable overrides
 .env

@@ -116,10 +116,49 @@ services:
     #depends_on:
     #  - litellm
 
+  # ==============================================
+  # LDAP -> LiteLLM key broker
+  # ==============================================
+  # Validates end-user LDAP credentials and hands back a LiteLLM virtual API
+  # key, creating the LiteLLM user/key on first login. Exposed to clients only
+  # via nginx (see nginx.conf's /broker/ location) -- no host port published.
+  litellm-ldap-broker:
+    build: ./broker
+    container_name: litellm-ldap-broker
+    restart: unless-stopped
+    depends_on:
+      litellm:
+        condition: service_healthy
+    volumes:
+      - ./broker_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      - LITELLM_BASE_URL=http://litellm:9001
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-master-key-change-me}
+      - LDAP_SERVER_HOST=ldapserver.example.com
+      - LDAP_SERVER_PORT=389
+      - LDAP_SEARCH_BASE=dc=auth,dc=example,dc=com
+      - LDAP_SEARCH_FILTER=(objectClass=person)
+      - LDAP_ATTRIBUTE_FOR_USERNAME=uid
+      - LDAP_ATTRIBUTE_FOR_MAIL=mail
+      - LDAP_USE_TLS=false
+      # - LDAP_BIND_DN=
+      # - LDAP_BIND_PASSWORD=
+      - KEY_DURATION=30d
+      - MAX_BUDGET=10
+      - TPM_LIMIT=100000
+      - RPM_LIMIT=60
+
   nginx:
     image: nginx:latest
     depends_on:
       - openwebui
+      - litellm-ldap-broker
     container_name: proxy
     ports:
       - "443:443"
