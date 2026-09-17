@@ -1,4 +1,43 @@
 #!/usr/bin/env bash
+# ============================================================
+# CONFIG -- EDIT THESE BEFORE DISTRIBUTING THIS SCRIPT.
+# This ships to end-user machines standalone (no ../.env, no rest of this
+# repo) so the real values have to live directly here.
+#
+# The tracked copy of this file in the repo must keep the example.com
+# placeholders below (see CLAUDE.md's "no real environment details" rule)
+# -- fill in the real host only in the copy you actually hand out, and
+# don't commit that edit back.
+# ============================================================
+BROKER_URL="https://testai.example.com/broker/login"
+LITELLM_BASE_URL="https://testai.example.com/litellm/v1"
+
+# Comma-separated served-model-names, matching --served-model-name in
+# docker-compose.yaml's vllm/vllm-nemotron services on the server side.
+# Update this if that list changes -- there's no way to derive it from the
+# key alone.
+LITELLM_MODELS="Qwen/Qwen_Qwen3-Coder-30B-A3B-Instruct,nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+
+# Real crush binary to launch at the end. If you installed the disguise
+# wrapper from ../scripts/crush, point this at crush.real instead.
+CRUSH_REAL_BIN="crush"
+
+# opencode/crush config files this script merges a "litellm" provider entry
+# into -- confirm these paths match your actual opencode/crush install
+# before relying on them; they're both tools' documented defaults, not
+# verified against a real install here.
+OPENCODE_CONFIG_FILE="${HOME}/.config/opencode/opencode.json"
+CRUSH_CONFIG_FILE="${HOME}/.config/crush/crush.json"
+LITELLM_PROVIDER_ID="litellm"
+
+# Where the key is cached (0600) and where a sourceable env-var file for new
+# shells gets written (also 0600). Defaults are fine for most setups.
+CACHE_FILE="${HOME}/.config/litellm/.litellm_key"
+ENV_FILE="${HOME}/.config/litellm/.litellm_env"
+# ============================================================
+# END CONFIG.
+# ============================================================
+
 # LDAP -> LiteLLM login for opencode/crush: authenticates against the
 # litellm-ldap-broker (see ../broker), caches the resulting key on disk with
 # tight permissions, reuses it while it's still valid, re-mints once it's
@@ -26,62 +65,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: source this script: source ${0}" >&2
   exit 1
 fi
-
-# ============================================================
-# Config file: ../.env (repo root, same file docker-compose.yaml reads),
-# resolved relative to this script's own location so it still works
-# regardless of what directory you `source` it from.
-#
-# NOTE on precedence: this is a plain `source`, so any KEY=VALUE line in
-# .env unconditionally OVERWRITES that variable's current value -- it does
-# NOT defer to something you already exported earlier in this shell. That's
-# different from docker-compose's own .env handling (where an
-# already-exported shell var wins). If you need a one-off override, export
-# it AFTER this block runs (i.e. after sourcing this script), or edit .env
-# itself for anything persistent.
-# ============================================================
-_litellm_login_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_CONFIG_FILE="${ENV_CONFIG_FILE:-${_litellm_login_script_dir}/../.env}"
-unset _litellm_login_script_dir
-
-if [[ -f "$ENV_CONFIG_FILE" ]]; then
-  # set -a exports every var a plain KEY=VALUE assignment defines while
-  # sourcing, without needing `export` on each line in .env itself -- same
-  # trick docker-compose's own .env loading relies on for making those
-  # values visible to the containers it starts.
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_CONFIG_FILE"
-  set +a
-else
-  echo "[litellm-login] no .env found at ${ENV_CONFIG_FILE}; using built-in defaults" >&2
-fi
-
-# ============================================================
-# Configuration: whatever .env set above wins; anything it left unset falls
-# back to these defaults.
-# ============================================================
-BROKER_URL="${BROKER_URL:-https://testai.example.com/broker/login}"
-LITELLM_BASE_URL="${LITELLM_BASE_URL:-https://testai.example.com/litellm/v1}"
-
-CACHE_FILE="${CACHE_FILE:-${HOME}/.config/litellm/.litellm_key}"   # key, plaintext, 0600
-ENV_FILE="${ENV_FILE:-${HOME}/.config/litellm/.litellm_env}"       # sourceable exports, 0600
-
-# Real crush binary to launch at the end. If you installed the disguise
-# wrapper from ../scripts/crush, point this at crush.real instead.
-CRUSH_REAL_BIN="${CRUSH_REAL_BIN:-crush}"
-
-# opencode/crush config files this script merges a "litellm" provider entry
-# into -- confirm these paths match your actual opencode/crush install
-# before relying on them; they're both tools' documented defaults, not
-# verified against a real install here.
-OPENCODE_CONFIG_FILE="${OPENCODE_CONFIG_FILE:-${HOME}/.config/opencode/opencode.json}"
-CRUSH_CONFIG_FILE="${CRUSH_CONFIG_FILE:-${HOME}/.config/crush/crush.json}"
-LITELLM_PROVIDER_ID="${LITELLM_PROVIDER_ID:-litellm}"
-# Comma-separated served-model-names, matching --served-model-name in
-# ../docker-compose.yaml's vllm/vllm-nemotron services. Update this if that
-# list changes -- there's no way to derive it from the key alone.
-LITELLM_MODELS="${LITELLM_MODELS:-Qwen/Qwen_Qwen3-Coder-30B-A3B-Instruct,nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4}"
 
 _login_fail() { echo "[litellm-login] $*" >&2; return 1; }
 
