@@ -28,7 +28,38 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 fi
 
 # ============================================================
-# Configuration (override via environment before sourcing)
+# Config file: ../.env (repo root, same file docker-compose.yaml reads),
+# resolved relative to this script's own location so it still works
+# regardless of what directory you `source` it from.
+#
+# NOTE on precedence: this is a plain `source`, so any KEY=VALUE line in
+# .env unconditionally OVERWRITES that variable's current value -- it does
+# NOT defer to something you already exported earlier in this shell. That's
+# different from docker-compose's own .env handling (where an
+# already-exported shell var wins). If you need a one-off override, export
+# it AFTER this block runs (i.e. after sourcing this script), or edit .env
+# itself for anything persistent.
+# ============================================================
+_litellm_login_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_CONFIG_FILE="${ENV_CONFIG_FILE:-${_litellm_login_script_dir}/../.env}"
+unset _litellm_login_script_dir
+
+if [[ -f "$ENV_CONFIG_FILE" ]]; then
+  # set -a exports every var a plain KEY=VALUE assignment defines while
+  # sourcing, without needing `export` on each line in .env itself -- same
+  # trick docker-compose's own .env loading relies on for making those
+  # values visible to the containers it starts.
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_CONFIG_FILE"
+  set +a
+else
+  echo "[litellm-login] no .env found at ${ENV_CONFIG_FILE}; using built-in defaults" >&2
+fi
+
+# ============================================================
+# Configuration: whatever .env set above wins; anything it left unset falls
+# back to these defaults.
 # ============================================================
 BROKER_URL="${BROKER_URL:-https://testai.example.com/broker/login}"
 LITELLM_BASE_URL="${LITELLM_BASE_URL:-https://testai.example.com/litellm/v1}"
