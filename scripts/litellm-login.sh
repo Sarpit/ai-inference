@@ -291,11 +291,21 @@ _litellm_login() {
 }
 
 if _litellm_login; then
-  # NOT exec: this script is sourced into your interactive shell, so exec
-  # here would replace that shell's process with crush -- when crush exited
-  # you'd have no shell left at all, instead of returning to your prompt
-  # with LITELLM_API_KEY etc. still exported for a later `opencode` run.
-  "$CRUSH_REAL_BIN" "$@"
+  # Launching crush is optional -- this script's real job (LDAP auth, key
+  # mint/cache, writing opencode.json/crush.json) is already done by this
+  # point regardless of whether crush is even installed. Set
+  # LAUNCH_CRUSH=false (or just don't have `crush` on PATH) to use this
+  # purely for login + config setup, e.g. before running `opencode` instead.
+  if [[ "${LAUNCH_CRUSH:-true}" == "true" ]] && command -v "$CRUSH_REAL_BIN" >/dev/null 2>&1; then
+    # NOT exec: this script is sourced into your interactive shell, so exec
+    # here would replace that shell's process with crush -- when crush
+    # exited you'd have no shell left at all, instead of returning to your
+    # prompt with LITELLM_API_KEY etc. still exported for a later
+    # `opencode` run.
+    "$CRUSH_REAL_BIN" "$@"
+  elif [[ "${LAUNCH_CRUSH:-true}" == "true" ]]; then
+    echo "[litellm-login] '${CRUSH_REAL_BIN}' not found on PATH; skipping launch (login + config setup are already done)." >&2
+  fi
 else
   echo "[litellm-login] login failed; not launching crush." >&2
 fi
