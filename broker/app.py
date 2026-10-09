@@ -71,8 +71,12 @@ PRIVILEGED_GROUPS = [g.lower() for g in _csv("PRIVILEGED_GROUPS", "sample_group_
 # Where to read a user's groups from. LDAP_ATTR_MEMBEROF is read off the user
 # entry; if LDAP_GROUP_SEARCH_BASE is set, groups listing the user as a
 # member/uniqueMember/memberUid are searched for too.
-LDAP_ATTR_MEMBEROF = os.environ.get("LDAP_ATTRIBUTE_FOR_GROUPS", "memberOf")
-LDAP_GROUP_SEARCH_BASE = os.environ.get("LDAP_GROUP_SEARCH_BASE", "")
+# Both are optional: many servers (e.g. OpenLDAP without the memberof overlay)
+# have no memberOf attribute, and ldap3 rejects it as an invalid attribute type,
+# so it is only requested when LDAP_ATTRIBUTE_FOR_GROUPS is set. The group
+# search is the default and falls back to LDAP_SEARCH_BASE.
+LDAP_ATTR_MEMBEROF = os.environ.get("LDAP_ATTRIBUTE_FOR_GROUPS", "")
+LDAP_GROUP_SEARCH_BASE = os.environ.get("LDAP_GROUP_SEARCH_BASE", "") or LDAP_SEARCH_BASE
 
 DB_PATH = os.environ.get("DB_PATH", "/data/broker.sqlite3")
 
@@ -158,7 +162,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
         lookup_conn.search(
             search_base=LDAP_SEARCH_BASE,
             search_filter=f"(&{LDAP_SEARCH_FILTER}({LDAP_ATTR_USERNAME}={safe_username}))",
-            attributes=[LDAP_ATTR_MAIL, LDAP_ATTR_MEMBEROF],
+            attributes=[LDAP_ATTR_MAIL] + ([LDAP_ATTR_MEMBEROF] if LDAP_ATTR_MEMBEROF else []),
         )
         if not lookup_conn.entries:
             raise HTTPException(status_code=401, detail="invalid credentials")
@@ -169,21 +173,28 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
         email = mail_values[0] if mail_values else f"{username}@example.com"
 
         groups: set[str] = set()
-        if LDAP_ATTR_MEMBEROF in entry:
+        if LDAP_ATTR_MEMBEROF and LDAP_ATTR_MEMBEROF in entry:
             for g in entry[LDAP_ATTR_MEMBEROF].values:
                 groups |= _group_names(str(g))
-        if LDAP_GROUP_SEARCH_BASE:
-            lookup_conn.search(
-                search_base=LDAP_GROUP_SEARCH_BASE,
-                search_filter=(
-                    f"(|(member={escape_filter_chars(user_dn)})"
-                    f"(uniqueMember={escape_filter_chars(user_dn)})"
-                    f"(memberUid={safe_username}))"
-                ),
-                attributes=["cn"],
-            )
+        # One search per membership attribute: a server whose schema lacks
+        # one of them (e.g. no memberUid) must not break the others or login.
+        for attr, value in (
+            ("member", user_dn),
+            ("uniqueMember", user_dn),
+            ("memberUid", username),
+        ):
+            try:
+                lookup_conn.search(
+                    search_base=LDAP_GROUP_SEARCH_BASE,
+                    search_filter=f"({attr}={escape_filter_chars(value)})",
+                    attributes=["cn"],
+                )
+            except Exception as exc:
+                logger.debug("group search on %s skipped: %s", attr, exc)
+                continue
             for g in lookup_conn.entries:
                 groups |= _group_names(g.entry_dn)
+        logger.info("user %s groups: %s", username, sorted(groups))
     finally:
         lookup_conn.unbind()
 

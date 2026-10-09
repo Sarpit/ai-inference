@@ -163,6 +163,8 @@ services:
       - ALLOWED_MODELS=qwen3-30b
       - DENIED_MODELS=nemotron-3-super-120b
       - PRIVILEGED_GROUPS=sample_group_a,sample_group_b
+      # Groups are found by searching LDAP_GROUP_SEARCH_BASE (default: LDAP_SEARCH_BASE)
+      # for member/uniqueMember/memberUid. Only set this if your server has memberOf:
       # - LDAP_ATTRIBUTE_FOR_GROUPS=memberOf
       # - LDAP_GROUP_SEARCH_BASE=ou=groups,dc=auth,dc=example,dc=com
 
