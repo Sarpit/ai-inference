@@ -158,6 +158,13 @@ services:
       - MAX_BUDGET=10
       - TPM_LIMIT=100000
       - RPM_LIMIT=60
+      # Model access: ALLOWED_MODELS for every user; DENIED_MODELS added only
+      # for members of PRIVILEGED_GROUPS. LiteLLM model_names from config.yaml.
+      - ALLOWED_MODELS=qwen3-30b
+      - DENIED_MODELS=nemotron-3-super-120b
+      - PRIVILEGED_GROUPS=sample_group_a,sample_group_b
+      # - LDAP_ATTRIBUTE_FOR_GROUPS=memberOf
+      # - LDAP_GROUP_SEARCH_BASE=ou=groups,dc=auth,dc=example,dc=com
 
   nginx:
     image: nginx:latest

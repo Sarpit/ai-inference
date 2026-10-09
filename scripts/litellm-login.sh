@@ -12,10 +12,11 @@
 BROKER_URL="https://testai.example.com/broker/login"
 LITELLM_BASE_URL="https://testai.example.com/litellm/v1"
 
-# Comma-separated served-model-names, matching --served-model-name in
-# docker-compose.yaml's vllm/vllm-nemotron services on the server side.
-# Update this if that list changes -- there's no way to derive it from the
-# key alone.
+# Fallback model list, only used if the broker's response has no "models".
+# Normally the broker decides this per user: ALLOWED_MODELS for everyone, plus
+# DENIED_MODELS for members of PRIVILEGED_GROUPS (set in docker-compose.yaml's
+# litellm-ldap-broker service) -- and bakes it into the key itself, so editing
+# it here cannot grant access.
 LITELLM_MODELS="Qwen/Qwen_Qwen3-Coder-30B-A3B-Instruct,nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
 
 # Real crush binary to launch at the end. If you installed the disguise
@@ -96,6 +97,8 @@ _litellm_persist_token() {
   mkdir -p "$(dirname "$CACHE_FILE")"
   printf '%s' "$tok" > "$CACHE_FILE"
   chmod 600 "$CACHE_FILE"
+  printf '%s' "$LITELLM_MODELS" > "${CACHE_FILE}.models"
+  chmod 600 "${CACHE_FILE}.models"
 
   {
     printf 'export LITELLM_API_KEY=%q\n' "$tok"
@@ -231,12 +234,22 @@ try:
 except Exception:
     pass' <<<"$body")
 
+  # Models the broker granted this user (depends on their LDAP groups).
+  local granted
+  granted=$(python3 -c 'import sys, json
+try:
+    print(",".join(json.loads(sys.stdin.read()).get("models", [])))
+except Exception:
+    pass' <<<"$body")
+
   if [[ -z "$token" ]]; then
     _login_fail "no api_key in broker response: ${body}"
     return 1
   fi
 
-  printf '%s' "$token"
+  # Two lines: key, then granted models (this runs in a $(...) subshell, so
+  # it can't set LITELLM_MODELS directly).
+  printf '%s\n%s' "$token" "$granted"
 }
 
 _litellm_login() {
@@ -248,6 +261,7 @@ _litellm_login() {
     local cached
     cached="$(<"$CACHE_FILE")"
     if _litellm_token_works "$cached"; then
+      [[ -r "${CACHE_FILE}.models" ]] && LITELLM_MODELS="$(<"${CACHE_FILE}.models")"
       _litellm_export_all "$cached"
       _litellm_configure_clients
       echo "[litellm-login] cached key still valid; reusing it." >&2
@@ -257,7 +271,11 @@ _litellm_login() {
   fi
 
   # --- 1) LDAP auth + mint-or-lookup, via the broker.
-  token=$(_litellm_authenticate_and_mint "$username") || return 1
+  local minted granted
+  minted=$(_litellm_authenticate_and_mint "$username") || return 1
+  token="${minted%%$'\n'*}"
+  granted="${minted#*$'\n'}"
+  [[ -n "$granted" ]] && LITELLM_MODELS="$granted"
 
   # --- 2) sanity-check the freshly obtained key before trusting it.
   if ! _litellm_token_works "$token"; then
