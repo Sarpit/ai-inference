@@ -12,24 +12,18 @@
 BROKER_URL="https://testai.example.com/broker/login"
 LITELLM_BASE_URL="https://testai.example.com/litellm/v1"
 
-# Fallback model list, only used if the broker's response has no "models".
-# Normally the broker decides this per user: ALLOWED_MODELS for everyone, plus
-# DENIED_MODELS for members of PRIVILEGED_GROUPS (set in docker-compose.yaml's
-# litellm-ldap-broker service) -- and bakes it into the key itself, so editing
-# it here cannot grant access.
-LITELLM_MODELS="Qwen/Qwen_Qwen3-Coder-30B-A3B-Instruct,nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
-
 # Real crush binary to launch at the end. If you installed the disguise
 # wrapper from ../scripts/crush, point this at crush.real instead.
 CRUSH_REAL_BIN="crush"
 
-# opencode/crush config files this script merges a "litellm" provider entry
-# into -- confirm these paths match your actual opencode/crush install
-# before relying on them; they're both tools' documented defaults, not
-# verified against a real install here.
-OPENCODE_CONFIG_FILE="${HOME}/.config/opencode/opencode.json"
-CRUSH_CONFIG_FILE="${HOME}/.config/crush/crush.json"
-LITELLM_PROVIDER_ID="litellm"
+# Central, shared opencode/crush configs (provider, models, baseURL) --
+# maintained by admins, not written by this script. Neither tool looks in a
+# shared location by default, so these are exported to point them at it:
+#   OPENCODE_CONFIG      -- path to the opencode.json *file*
+#   CRUSH_GLOBAL_CONFIG  -- *directory* crush reads crush.json from
+# Leave either empty to fall back to that tool's per-user default.
+OPENCODE_CONFIG="/group/tools/opencode/opencode.json"
+CRUSH_GLOBAL_CONFIG="/group/tools/crush"
 
 # Where the key is cached (0600) and where a sourceable env-var file for new
 # shells gets written (also 0600). Defaults are fine for most setups.
@@ -87,24 +81,25 @@ _litellm_token_works() {
 # name opencode/crush might be configured to read:
 #   - LITELLM_API_KEY          opencode's `{env:LITELLM_API_KEY}` pattern
 #   - OPENAI_API_KEY / _BASE_URL  crush's "openai"/"openai-compat" provider
-# Once you've confirmed which var name each tool's own config
-# (opencode.json / crush.json) actually references, feel free to trim this
-# down to just those -- exporting all of them is a "works everywhere while
-# we sort out the exact names" default, not a final state.
+#   - OPENCODE_CONFIG / CRUSH_GLOBAL_CONFIG  the central configs, if set
+# Once you've confirmed which var name the central opencode.json / crush.json
+# actually reference, feel free to trim this down to just those -- exporting
+# all of them is a "works everywhere while we sort out the exact names"
+# default, not a final state.
 _litellm_persist_token() {
   local tok="$1"
   umask 077
   mkdir -p "$(dirname "$CACHE_FILE")"
   printf '%s' "$tok" > "$CACHE_FILE"
   chmod 600 "$CACHE_FILE"
-  printf '%s' "$LITELLM_MODELS" > "${CACHE_FILE}.models"
-  chmod 600 "${CACHE_FILE}.models"
 
   {
     printf 'export LITELLM_API_KEY=%q\n' "$tok"
     printf 'export OPENAI_API_KEY=%q\n' "$tok"
     printf 'export OPENAI_BASE_URL=%q\n' "$LITELLM_BASE_URL"
     printf 'export LITELLM_BASE_URL=%q\n' "$LITELLM_BASE_URL"
+    [[ -n "$OPENCODE_CONFIG" ]] && printf 'export OPENCODE_CONFIG=%q\n' "$OPENCODE_CONFIG"
+    [[ -n "$CRUSH_GLOBAL_CONFIG" ]] && printf 'export CRUSH_GLOBAL_CONFIG=%q\n' "$CRUSH_GLOBAL_CONFIG"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 }
@@ -115,86 +110,14 @@ _litellm_export_all() {
   export OPENAI_API_KEY="$tok"
   export OPENAI_BASE_URL="$LITELLM_BASE_URL"
   export LITELLM_BASE_URL="$LITELLM_BASE_URL"
-}
-
-# Merges a "litellm" provider entry into opencode.json and crush.json so
-# both tools actually point at the gateway and pick up the right env var --
-# not just hoping whatever's already in those files happens to match.
-# Everything else already in either file (other providers, unrelated
-# settings) is preserved: this loads the file as JSON if it exists, sets
-# only provider[LITELLM_PROVIDER_ID] / providers[LITELLM_PROVIDER_ID], and
-# writes the whole thing back. Safe to call on every login, not just on a
-# fresh mint -- it's idempotent.
-#
-# The actual secret never goes into either file: opencode's apiKey is the
-# literal string "{env:LITELLM_API_KEY}" (opencode substitutes it at
-# runtime), and crush's api_key/base_url are literal "$OPENAI_API_KEY" /
-# "$OPENAI_BASE_URL" strings that crush itself interpolates from the
-# environment -- neither is shell-expanded while writing this file.
-_litellm_configure_clients() {
-  OPENCODE_CONFIG_FILE="$OPENCODE_CONFIG_FILE" \
-  LITELLM_BASE_URL="$LITELLM_BASE_URL" \
-  LITELLM_PROVIDER_ID="$LITELLM_PROVIDER_ID" \
-  LITELLM_MODELS="$LITELLM_MODELS" \
-  python3 -c '
-import json, os
-
-path = os.environ["OPENCODE_CONFIG_FILE"]
-provider_id = os.environ["LITELLM_PROVIDER_ID"]
-models = [m for m in os.environ.get("LITELLM_MODELS", "").split(",") if m]
-
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    cfg = {}
-
-cfg.setdefault("$schema", "https://opencode.ai/config.json")
-provider = cfg.setdefault("provider", {})
-provider[provider_id] = {
-    "npm": "@ai-sdk/openai-compatible",
-    "name": "Internal LiteLLM",
-    "options": {
-        "baseURL": os.environ["LITELLM_BASE_URL"],
-        "apiKey": "{env:LITELLM_API_KEY}",
-    },
-    "models": {m: {"name": m} for m in models},
-}
-
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-' || _login_fail "could not update ${OPENCODE_CONFIG_FILE}"
-
-  CRUSH_CONFIG_FILE="$CRUSH_CONFIG_FILE" \
-  LITELLM_PROVIDER_ID="$LITELLM_PROVIDER_ID" \
-  python3 -c '
-import json, os
-
-path = os.environ["CRUSH_CONFIG_FILE"]
-provider_id = os.environ["LITELLM_PROVIDER_ID"]
-
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    cfg = {}
-
-cfg.setdefault("$schema", "https://charm.land/crush.json")
-providers = cfg.setdefault("providers", {})
-providers[provider_id] = {
-    "type": "openai-compat",
-    "base_url": "$OPENAI_BASE_URL",
-    "api_key": "$OPENAI_API_KEY",
-    # no "models": crush auto-discovers via GET /v1/models at load time.
-}
-
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-' || _login_fail "could not update ${CRUSH_CONFIG_FILE}"
+  if [[ -n "$OPENCODE_CONFIG" ]]; then
+    [[ -r "$OPENCODE_CONFIG" ]] || echo "[litellm-login] warning: shared opencode config not found at ${OPENCODE_CONFIG}" >&2
+    export OPENCODE_CONFIG
+  fi
+  if [[ -n "$CRUSH_GLOBAL_CONFIG" ]]; then
+    [[ -r "${CRUSH_GLOBAL_CONFIG}/crush.json" ]] || echo "[litellm-login] warning: shared crush config not found at ${CRUSH_GLOBAL_CONFIG}/crush.json" >&2
+    export CRUSH_GLOBAL_CONFIG
+  fi
 }
 
 # Authenticates against the broker and mints/looks up a key. Prints the key
@@ -234,22 +157,12 @@ try:
 except Exception:
     pass' <<<"$body")
 
-  # Models the broker granted this user (depends on their LDAP groups).
-  local granted
-  granted=$(python3 -c 'import sys, json
-try:
-    print(",".join(json.loads(sys.stdin.read()).get("models", [])))
-except Exception:
-    pass' <<<"$body")
-
   if [[ -z "$token" ]]; then
     _login_fail "no api_key in broker response: ${body}"
     return 1
   fi
 
-  # Two lines: key, then granted models (this runs in a $(...) subshell, so
-  # it can't set LITELLM_MODELS directly).
-  printf '%s\n%s' "$token" "$granted"
+  printf '%s' "$token"
 }
 
 _litellm_login() {
@@ -261,9 +174,7 @@ _litellm_login() {
     local cached
     cached="$(<"$CACHE_FILE")"
     if _litellm_token_works "$cached"; then
-      [[ -r "${CACHE_FILE}.models" ]] && LITELLM_MODELS="$(<"${CACHE_FILE}.models")"
       _litellm_export_all "$cached"
-      _litellm_configure_clients
       echo "[litellm-login] cached key still valid; reusing it." >&2
       return 0
     fi
@@ -271,11 +182,7 @@ _litellm_login() {
   fi
 
   # --- 1) LDAP auth + mint-or-lookup, via the broker.
-  local minted granted
-  minted=$(_litellm_authenticate_and_mint "$username") || return 1
-  token="${minted%%$'\n'*}"
-  granted="${minted#*$'\n'}"
-  [[ -n "$granted" ]] && LITELLM_MODELS="$granted"
+  token=$(_litellm_authenticate_and_mint "$username") || return 1
 
   # --- 2) sanity-check the freshly obtained key before trusting it.
   if ! _litellm_token_works "$token"; then
@@ -286,17 +193,16 @@ _litellm_login() {
   # --- 3) export + persist.
   _litellm_export_all "$token"
   _litellm_persist_token "$token"
-  _litellm_configure_clients
   echo "[litellm-login] new key minted and cached at ${CACHE_FILE}." >&2
   echo "[litellm-login] for new shells: source ${ENV_FILE}" >&2
 }
 
 if _litellm_login; then
   # Launching crush is optional -- this script's real job (LDAP auth, key
-  # mint/cache, writing opencode.json/crush.json) is already done by this
-  # point regardless of whether crush is even installed. Set
-  # LAUNCH_CRUSH=false (or just don't have `crush` on PATH) to use this
-  # purely for login + config setup, e.g. before running `opencode` instead.
+  # mint/cache, exporting the env vars) is already done by this point
+  # regardless of whether crush is even installed. Set LAUNCH_CRUSH=false
+  # (or just don't have `crush` on PATH) to use this purely for login, e.g.
+  # before running `opencode` instead.
   if [[ "${LAUNCH_CRUSH:-true}" == "true" ]] && command -v "$CRUSH_REAL_BIN" >/dev/null 2>&1; then
     # NOT exec: this script is sourced into your interactive shell, so exec
     # here would replace that shell's process with crush -- when crush
@@ -305,7 +211,7 @@ if _litellm_login; then
     # `opencode` run.
     "$CRUSH_REAL_BIN" "$@"
   elif [[ "${LAUNCH_CRUSH:-true}" == "true" ]]; then
-    echo "[litellm-login] '${CRUSH_REAL_BIN}' not found on PATH; skipping launch (login + config setup are already done)." >&2
+    echo "[litellm-login] '${CRUSH_REAL_BIN}' not found on PATH; skipping launch (login is already done)." >&2
   fi
 else
   echo "[litellm-login] login failed; not launching crush." >&2

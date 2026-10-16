@@ -54,30 +54,6 @@ TPM_LIMIT = int(os.environ.get("TPM_LIMIT", "100000"))
 RPM_LIMIT = int(os.environ.get("RPM_LIMIT", "60"))
 TEAM_ID = os.environ.get("TEAM_ID", "")
 
-# Model access, enforced server-side by baking `models` into the LiteLLM key.
-#   ALLOWED_MODELS  -- every authenticated user gets these.
-#   DENIED_MODELS   -- restricted; only users in one of PRIVILEGED_GROUPS get
-#                      these *in addition to* ALLOWED_MODELS.
-# All three are comma-separated. Values are LiteLLM `model_name`s from
-# config.yaml. A group matches on its short name (CN) or full DN, case-insensitive.
-def _csv(name: str, default: str) -> list[str]:
-    return [v.strip() for v in os.environ.get(name, default).split(",") if v.strip()]
-
-
-ALLOWED_MODELS = _csv("ALLOWED_MODELS", "qwen3-30b")
-DENIED_MODELS = _csv("DENIED_MODELS", "nemotron-3-super-120b")
-PRIVILEGED_GROUPS = [g.lower() for g in _csv("PRIVILEGED_GROUPS", "sample_group_a")]
-
-# Where to read a user's groups from. LDAP_ATTR_MEMBEROF is read off the user
-# entry; if LDAP_GROUP_SEARCH_BASE is set, groups listing the user as a
-# member/uniqueMember/memberUid are searched for too.
-# Both are optional: many servers (e.g. OpenLDAP without the memberof overlay)
-# have no memberOf attribute, and ldap3 rejects it as an invalid attribute type,
-# so it is only requested when LDAP_ATTRIBUTE_FOR_GROUPS is set. The group
-# search is the default and falls back to LDAP_SEARCH_BASE.
-LDAP_ATTR_MEMBEROF = os.environ.get("LDAP_ATTRIBUTE_FOR_GROUPS", "")
-LDAP_GROUP_SEARCH_BASE = os.environ.get("LDAP_GROUP_SEARCH_BASE", "") or LDAP_SEARCH_BASE
-
 DB_PATH = os.environ.get("DB_PATH", "/data/broker.sqlite3")
 
 app = FastAPI()
@@ -92,15 +68,8 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS keys ("
-        "user_id TEXT PRIMARY KEY, api_key TEXT NOT NULL, issued_at TEXT NOT NULL, "
-        "models TEXT NOT NULL DEFAULT '')"
+        "user_id TEXT PRIMARY KEY, api_key TEXT NOT NULL, issued_at TEXT NOT NULL)"
     )
-    # Pre-existing DBs from before model tiers: add the column; '' never
-    # equals a real model list, so those keys get synced on next login.
-    try:
-        conn.execute("ALTER TABLE keys ADD COLUMN models TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
     return conn
 
 
@@ -125,17 +94,8 @@ def build_ldap_tls() -> Tls | None:
     return Tls(validate=2, ca_certs_file=LDAP_CA_CERT_FILE)  # ssl.CERT_REQUIRED
 
 
-def _group_names(raw: str) -> set[str]:
-    """'cn=Admins,ou=g,dc=x' -> {'cn=admins,ou=g,dc=x', 'admins'} (lowercased)."""
-    raw = raw.strip().lower()
-    names = {raw}
-    if raw.startswith("cn="):
-        names.add(raw[3:].split(",", 1)[0])
-    return names
-
-
-def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
-    """Validates credentials against LDAP. Returns (email, group names)."""
+def ldap_authenticate(username: str, password: str) -> str:
+    """Validates credentials against LDAP. Returns the user's email (best effort)."""
     server = Server(
         LDAP_SERVER_HOST,
         port=LDAP_SERVER_PORT,
@@ -162,7 +122,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
         lookup_conn.search(
             search_base=LDAP_SEARCH_BASE,
             search_filter=f"(&{LDAP_SEARCH_FILTER}({LDAP_ATTR_USERNAME}={safe_username}))",
-            attributes=[LDAP_ATTR_MAIL] + ([LDAP_ATTR_MEMBEROF] if LDAP_ATTR_MEMBEROF else []),
+            attributes=[LDAP_ATTR_MAIL],
         )
         if not lookup_conn.entries:
             raise HTTPException(status_code=401, detail="invalid credentials")
@@ -171,30 +131,6 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
         user_dn = entry.entry_dn
         mail_values = entry[LDAP_ATTR_MAIL].values if LDAP_ATTR_MAIL in entry else []
         email = mail_values[0] if mail_values else f"{username}@example.com"
-
-        groups: set[str] = set()
-        if LDAP_ATTR_MEMBEROF and LDAP_ATTR_MEMBEROF in entry:
-            for g in entry[LDAP_ATTR_MEMBEROF].values:
-                groups |= _group_names(str(g))
-        # One search per membership attribute: a server whose schema lacks
-        # one of them (e.g. no memberUid) must not break the others or login.
-        for attr, value in (
-            ("member", user_dn),
-            ("uniqueMember", user_dn),
-            ("memberUid", username),
-        ):
-            try:
-                lookup_conn.search(
-                    search_base=LDAP_GROUP_SEARCH_BASE,
-                    search_filter=f"({attr}={escape_filter_chars(value)})",
-                    attributes=["cn"],
-                )
-            except Exception as exc:
-                logger.debug("group search on %s skipped: %s", attr, exc)
-                continue
-            for g in lookup_conn.entries:
-                groups |= _group_names(g.entry_dn)
-        logger.info("user %s groups: %s", username, sorted(groups))
     finally:
         lookup_conn.unbind()
 
@@ -208,15 +144,7 @@ def ldap_authenticate(username: str, password: str) -> tuple[str, set[str]]:
         if user_conn is not None:
             user_conn.unbind()
 
-    return email, groups
-
-
-def models_for(groups: set[str]) -> list[str]:
-    """ALLOWED_MODELS for everyone; plus DENIED_MODELS for privileged groups."""
-    models = list(ALLOWED_MODELS)
-    if groups & set(PRIVILEGED_GROUPS):
-        models += [m for m in DENIED_MODELS if m not in models]
-    return models
+    return email
 
 
 def litellm_headers() -> dict:
@@ -245,21 +173,8 @@ def litellm_create_user(user_id: str, email: str) -> None:
         raise HTTPException(status_code=502, detail="upstream error creating user; contact an administrator")
 
 
-def litellm_update_key_models(api_key: str, models: list[str]) -> None:
-    resp = requests.post(
-        f"{LITELLM_BASE_URL}/key/update",
-        json={"key": api_key, "models": models},
-        headers=litellm_headers(),
-        timeout=10,
-    )
-    if resp.status_code != 200:
-        logger.error("/key/update failed: HTTP %s: %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=502, detail="upstream error updating key; contact an administrator")
-
-
-def litellm_generate_key(user_id: str, models: list[str]) -> str:
+def litellm_generate_key(user_id: str) -> str:
     body = {
-        "models": models,
         "user_id": user_id,
         "key_alias": f"ldap-{user_id}",
         "duration": KEY_DURATION,
@@ -290,41 +205,34 @@ def login(req: LoginRequest):
     username = req.username.strip()
     ttl_seconds = parse_duration_seconds(KEY_DURATION)
 
-    # Validate once, up front: also tells us the user's *current* groups, so a
-    # user promoted/demoted in LDAP has their existing key's models re-synced.
-    email, groups = ldap_authenticate(username, req.password)
-    models = models_for(groups)
-
     with closing(db()) as conn:
         row = conn.execute(
-            "SELECT api_key, issued_at, models FROM keys WHERE user_id = ?", (username,)
+            "SELECT api_key, issued_at FROM keys WHERE user_id = ?", (username,)
         ).fetchone()
 
         if row:
-            api_key, issued_at, stored_models = row
+            api_key, issued_at = row
             issued_epoch = calendar.timegm(time.strptime(issued_at, "%Y-%m-%dT%H:%M:%SZ"))
             if time.time() < issued_epoch + ttl_seconds:
-                if stored_models != ",".join(models):
-                    litellm_update_key_models(api_key, models)
-                    conn.execute(
-                        "UPDATE keys SET models = ? WHERE user_id = ?",
-                        (",".join(models), username),
-                    )
-                    conn.commit()
-                return {"api_key": api_key, "models": models}
+                # Still verify the password on every login -- a cached key
+                # does not mean the caller currently knows valid credentials.
+                ldap_authenticate(username, req.password)
+                return {"api_key": api_key}
             # Cached key has outlived LiteLLM's own key duration; LiteLLM has
             # since expired it too, so drop it and mint a fresh one below.
             conn.execute("DELETE FROM keys WHERE user_id = ?", (username,))
             conn.commit()
 
+        email = ldap_authenticate(username, req.password)
+
         if not litellm_user_exists(username):
             litellm_create_user(username, email)
 
-        api_key = litellm_generate_key(username, models)
+        api_key = litellm_generate_key(username)
         try:
             conn.execute(
-                "INSERT INTO keys (user_id, api_key, issued_at, models) VALUES (?, ?, ?, ?)",
-                (username, api_key, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), ",".join(models)),
+                "INSERT INTO keys (user_id, api_key, issued_at) VALUES (?, ?, ?)",
+                (username, api_key, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
             )
             conn.commit()
         except sqlite3.IntegrityError:
@@ -336,7 +244,7 @@ def login(req: LoginRequest):
             if existing is None:
                 raise
             api_key = existing[0]
-        return {"api_key": api_key, "models": models}
+        return {"api_key": api_key}
 
 
 @app.get("/health")
